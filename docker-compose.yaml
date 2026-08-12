@@ -2,7 +2,9 @@ version: "3.8"
 
 services:
   openviking:
-    image: ghcr.io/volcengine/openviking:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
 
     ports:
       - "${OPENVIKING_SERVER_PORT:-1933}:${OPENVIKING_SERVER_PORT:-1933}"
