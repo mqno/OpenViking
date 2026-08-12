@@ -7,10 +7,11 @@ FROM rust:1.91.1-trixie AS rust-toolchain
 
 
 # ============================================================
-# Stage 2: Build OpenViking + native dependencies
+# Stage 2: Build OpenViking
 # ============================================================
 FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim AS py-builder
 
+# Rust toolchain
 COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
 
@@ -29,7 +30,9 @@ ARG OPENVIKING_VERSION=
 ARG TARGETPLATFORM
 ARG UV_LOCK_STRATEGY=auto
 
+# ============================================================
 # Native build dependencies
+# ============================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ccache \
@@ -38,11 +41,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
-# Make cmake pick ccache gcc/g++
+# Use ccache for native compilation
 ENV PATH="/usr/lib/ccache:${PATH}"
 ENV CCACHE_DIR=/root/.ccache
+
+# Cargo build cache
 ENV CARGO_TARGET_DIR=/cargo-target
 
+# uv settings
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 ENV UV_NO_DEV=1
@@ -51,7 +57,7 @@ WORKDIR /app
 
 
 # ============================================================
-# Copy source
+# OpenViking source
 # ============================================================
 COPY Cargo.toml Cargo.lock ./
 COPY pyproject.toml uv.lock setup.py README.md ./
@@ -67,11 +73,10 @@ COPY web-studio/ web-studio/
 
 
 # ============================================================
-# Install Python environment
+# Install OpenViking environment
 #
 # IMPORTANT:
-# local-embed MUST be included here so llama-cpp-python
-# becomes part of /app/.venv and is copied into runtime.
+# local-embed extra is explicitly enabled.
 # ============================================================
 RUN --mount=type=cache,target=/root/.cache/uv,id=uv-${TARGETPLATFORM} \
     --mount=type=cache,target=/root/.npm,id=npm-${TARGETPLATFORM} \
@@ -117,13 +122,24 @@ RUN --mount=type=cache,target=/root/.cache/uv,id=uv-${TARGETPLATFORM} \
 
 
 # ============================================================
-# HARD CHECK
+# FORCE llama-cpp-python into the runtime virtualenv
 #
-# Do NOT allow Docker build to succeed if llama-cpp-python
-# wasn't actually installed.
+# This is intentionally separate from the OpenViking extra.
+# It guarantees that the package exists in /app/.venv.
+# ============================================================
+RUN uv pip install \
+    --python /app/.venv/bin/python \
+    --no-cache \
+    llama-cpp-python
+
+
+# ============================================================
+# BUILD-TIME VERIFICATION
+#
+# Docker build MUST fail if llama-cpp-python cannot be imported.
 # ============================================================
 RUN /app/.venv/bin/python -c \
-    "import llama_cpp; print('llama-cpp-python OK:', llama_cpp.__version__)"
+    "import llama_cpp; print('=================================================='); print('SUCCESS: llama-cpp-python installed'); print('Version:', llama_cpp.__version__); print('Path:', llama_cpp.__file__); print('==================================================')"
 
 
 # ============================================================
@@ -142,9 +158,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 
-# Copy complete virtual environment including llama-cpp-python
+# ============================================================
+# Copy complete virtual environment
+#
+# This includes llama-cpp-python from the builder.
+# ============================================================
 COPY --from=py-builder /app/.venv /app/.venv
 
+# OpenViking runtime scripts
 COPY docker/openviking-entrypoint.sh /usr/local/bin/openviking-entrypoint
 COPY docker/pending_health_server.py /usr/local/bin/openviking-pending-health
 
@@ -154,15 +175,24 @@ RUN mkdir -p /app/.openviking \
     /usr/local/bin/openviking-pending-health
 
 
+# ============================================================
+# Environment
+# ============================================================
 ENV HOME="/app" \
     PATH="/app/.venv/bin:$PATH" \
     OPENVIKING_CONFIG_FILE="/app/.openviking/ov.conf" \
     OPENVIKING_CLI_CONFIG_FILE="/app/.openviking/ovcli.conf"
 
 
+# ============================================================
+# OpenViking server
+# ============================================================
 EXPOSE 1933
 
 
+# ============================================================
+# Healthcheck
+# ============================================================
 HEALTHCHECK \
     --interval=30s \
     --timeout=5s \
@@ -172,16 +202,18 @@ HEALTHCHECK \
 
 
 # ============================================================
-# Persistent state:
-#
-# /app/.openviking
-#   ├── ov.conf
-#   ├── ovcli.conf
-#   └── data/
+# Persistent state
 #
 # Coolify volume:
+#
 #   openviking_data:/app/.openviking
+#
+# This contains:
+#   /app/.openviking/ov.conf
+#   /app/.openviking/ovcli.conf
+#   /app/.openviking/data/
+#
+# Do NOT remove this volume.
 # ============================================================
-
 
 ENTRYPOINT ["openviking-entrypoint"]
