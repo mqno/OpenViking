@@ -108,7 +108,7 @@ RUN apt-get update \
         curl \
         git \
         libstdc++6 \
-        ibgomp1 \
+        libgomp1 \
         ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
